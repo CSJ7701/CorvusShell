@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+
+import click
+
+from core.loader import discover
+from core.app import run_panel
+
+
+@click.group()
+def cli():
+    pass
+
+
+@cli.command()
+def list():
+
+    registry = discover()
+
+    for panel in registry.values():
+
+        click.echo(
+            f"{panel.name:15} {panel.description}"
+        )
+
+
+@cli.command()
+@click.argument("panel")
+def run(panel):
+
+    registry = discover()
+
+    if panel not in registry:
+        raise click.ClickException(
+            f"No panel named '{panel}'."
+        )
+
+    run_panel(registry[panel].cls)
+
+
+@cli.command()
+@click.argument("panel")
+def info(panel):
+
+    registry = discover()
+
+    p = registry[panel]
+
+    click.echo(f"Name: {p.name}")
+    click.echo(f"Description: {p.description}")
+
+
+if __name__ == "__main__":
+    cli()
