@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Development wrapper for Corvus Shell in Guix
+
+# Dynamically locate gtk4-layer-shell in the Guix store if LD_PRELOAD isn't set
+if [[ -z "$LD_PRELOAD" ]]; then
+    LAYER_SHELL_SO="$(guix build gtk4-layer-shell 2>/dev/null)/lib/libgtk4-layer-shell.so"
+    if [[ -f "$LAYER_SHELL_SO" ]]; then
+        export LD_PRELOAD="$LAYER_SHELL_SO"
+    fi
+fi
+
+# Execute the main corvus script passing all arguments
+exec python3 "$(dirname "$0")/../corvus" "$@"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from typing import ClassVar, Dict, Type
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -24,9 +25,17 @@ class PanelConfig:
 
 class Panel(Gtk.ApplicationWindow):
 
-    name = "panel"
-    description = ""
-    config = PanelConfig()
+    name: ClassVar[str] = "panel"
+    description: ClassVar[str] = ""
+    config: ClassVar[PanelConfig] = PanelConfig()
+
+    registry: ClassVar[Dict[str, Type[Panel]]] = {}
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # Skip registering base or unnamed subclasses
+        if cls.name and cls.name != "panel":
+            cls.registry[cls.name] = cls
     
     def __init__(self, app):
         super().__init__(application=app)

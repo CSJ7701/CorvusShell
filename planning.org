@@ -1,0 +1,111 @@
+* Concept
+Corvus Shell is a GTK4 desktop shell focused on keyboard control and organized into extensible, composable "panels" (called *Wings*).
+It is built around a single background daemon (=corvus=) written in Python (PyGObject) and structured as a ~Gtk.Application~. The daemon manages lifecycle state, handles event orchestration, and interfaces with Wayland compositors via ~gtk-layer-shell~.
+
+** Inter-Process Communication (IPC)
+Rather than maintaining a custom socket protocol, IPC is handled natively via DBus. ~Gtk.Application~ automatically registers an IPC bus and exposes ~GActions~. 
+The accompanying CLI utility (=corvid=) acts as a DBus client, executing actions on the daemon (e.g., toggling wings, querying status, or passing arbitrary commands to focused components).
+
+** Architecture & Structure
+The shell uses a avian-themed hierarchy for modular organization:
+- *Wings*: Top-level surface containers (mapped to ~Gtk.Window~ / Layer Shell surfaces). They manage positioning, anchors, margins, focus interactivity, CSS styles, and visibility state. Wings do not use free-floating windows or top-bar constraints; all visual elements belong to a Wing.
+- *Feathers*: Modular, reusable UI components/widgets (~Gtk.Widget~ wrappers) embedded inside a Wing's layout.
+- *Pinions*: Persistent background data sources / services (e.g., notification listeners, system status monitors, IPC state helpers) that exist independently of UI visibility and push updates to Feathers.
+
+** Visibility & Lifecycle Model
+To prevent frame stutters during keybind execution while optimizing resource usage, Corvus uses a hybrid pre-load and lazy-load strategy:
+- *Pre-loaded Wings (Default)*: Primary and frequently accessed Wings (e.g., application launchers, runner menus, notification panels) are fully constructed and pre-rendered at daemon startup, but kept hidden (~visible = False~). Toggling visibility unmaps/maps the underlying Wayland surface instantaneously with zero layout computation overhead.
+- *Lazy-loaded Wings*: Secondary, complex, or rarely used Wings can explicitly configure ~preload = False~ in their declaration. These wings delay UI widget construction until their first ~corvid wing <name> show~ invocation to conserve initial startup time.
+- *Pinion Autostart*: All Pinions initialize immediately at daemon startup regardless of Wing lazy-loading flags, ensuring background data streams (e.g., notification queues, audio status) are continuously collected.
+- *Show / Hide vs. Destroy*: Once a Wing is loaded into memory, toggling visibility unmaps/maps the Wayland surface rather than destroying the object. Wings are only destroyed during an explicit configuration reload (~corvid reload~).  
+
+* Implementation & IPC Interface
+
+** Daemon (`corvus`)
+- Executable command: ~corvus~
+- Subclassed from ~Gtk.Application~.
+- Registers a unique DBus application ID (e.g., =org.corvus.Shell=).
+- Manages global state, CSS provider loading, service initializations, and Wing registration.
+- Handles Wings configured to load at startup vs lazy load on first call
+
+** CLI Client (`corvid`)
+- Executable command: ~corvid~
+- Formats CLI arguments into DBus method calls / ~GAction~ triggers aimed at ~corvus~.
+
+*** IPC / CLI Commands
+- ~corvid list~ : Lists all defined Wings, their current visibility state, and brief descriptions.
+- ~corvid wing <name> show~ : Maps and displays the target Wing.
+- ~corvid wing <name> hide~ : Unmaps the target Wing from the surface layer.
+- ~corvid wing <name> toggle~ : Toggles visibility state of the target Wing.
+- ~corvid wing <name> action <action_name> [args]~ : Invokes a named action defined on a Wing or its child Feathers.
+- ~corvid wing <name> info~ : Displays metadata, anchoring info, loaded Feathers, and available actions for a Wing.
+- ~corvid reload~ : Triggers a full configuration and CSS re-parse without restarting the daemon.
+
+** Extensions & Isolated Module Loading
+Corvus uses a custom module loader backed by ~importlib.util~ to dynamically load user-defined components from =~/.config/corvus-shell/= without altering global ~sys.path~ or mutating ~sys.modules~.
+
+*** Directory Layout
+- =~/.config/corvus-shell/pinions/= : Background data drivers (loaded first).
+- =~/.config/corvus-shell/feathers/= : Modular UI widgets (loaded second).
+- =~/.config/corvus-shell/wings/= : Top-level surface windows (loaded last).
+- =~/.config/corvus-shell/scripts/= : Standalone helper scripts and executables.
+
+*** Module Resolution Mechanism
+1. The daemon constructs isolated spec contexts (~spec_from_file_location~) for each file found in the component directories.
+2. Components are loaded into an internal, isolated `corvus_user` module space maintained directly by `CorvusApp`.
+3. To share references across user scripts (such as a Wing referencing a shared Pinion), `corvus` provides an internal API (e.g., `self.get_pinion("mpris")` or `corvus.import_feather("search_bar")`) which queries the daemon's internal registry instead of relying on arbitrary system path imports.
+
+* Object Specifications
+
+** CorvusApp (Daemon Engine)
+- *Role*: Top-level manager inheriting from ~Gtk.Application~. Controls DBus registration, global lifecycle, custom loader orchestration, and component registries.
+- *Key Attributes*:
+  - ~wings~: Dictionary of registered ~Wing~ instances keyed by name.
+  - ~pinions~: Dictionary of active background data providers.
+  - ~user_module_loader~: Custom ~importlib~ manager handling isolated file loading.
+  - ~css_provider~: Global ~Gtk.CssProvider~ instance.
+- *Common Methods*:
+  - ~do_startup()~: Initializes DBus actions, loads global CSS, starts all Pinions, pre-renders configured Wings, and sets up custom module scopes.
+  - ~register_wing(wing_instance)~: Adds a Wing to the internal registry and exposes its DBus actions.
+  - ~get_pinion(name)~: Safe accessor for Feathers/Wings to connect to background Pinion services.
+  - ~reload_config()~: Clears component registries, purges user module specs, re-reads configuration files, and rebuilds UI surfaces.
+
+** Wing (Surface Container)
+- *Role*: Encapsulates a ~Gtk.Window~ configured as a Wayland layer-shell surface. Controls positioning, dimensions, keyboard interactivity, and child layout.
+- *Key Attributes*:
+  - ~name~: Unique string identifier.
+  - ~preload~: Boolean flag (~True~ by default) determining if the UI is rendered on startup or lazily on first show.
+  - ~anchor~: Set of screen edges to attach to (e.g., ~["top", "right"]~).
+  - ~margin~: Offsets from anchored edges (top, bottom, left, right).
+  - ~layer~: Target layer (~"background"~, ~"bottom"~, ~"top"~, ~"overlay"~).
+  - ~keyboard_mode~: Focus mode (~"none"~, ~"exclusive"~, ~"on_demand"~).
+  - ~feathers~: List or tree structure of child UI components.
+  - ~actions~: Map of public functions exposed to DBus via ~corvid~.
+- *Common Methods*:
+  - ~ensure_built()~: Checks if the Wing widget tree is instantiated; builds it if lazy-loading was enabled and it hasn't been built yet.
+  - ~show()~: Calls ~ensure_built()~, sets window visibility to ~True~, and configures keyboard focus.
+  - ~hide()~: Sets window visibility to ~False~, releasing keyboard focus.
+  - ~toggle()~: Reverses current visibility state.
+  - ~register_action(name, callback)~: Binds an IPC-accessible action to a local method or Feather handler.
+
+** Feather (UI Component)
+- *Role*: Modular UI element or layout block (~Gtk.Box~, ~Gtk.Button~, ~Gtk.Entry~, etc.) contained within a Wing.
+- *Key Attributes*:
+  - ~parent_wing~: Reference to the enclosing Wing surface.
+  - ~style_classes~: List of CSS classes applied to the root widget.
+- *Common Methods*:
+  - ~build_ui()~: Constructs and returns the internal GTK widget hierarchy.
+  - ~bind_pinion(pinion_name, signal_name, callback)~: Connects a background Pinion data signal directly to a UI update callback via the daemon registry.
+  - ~emit_action(action_name, *args)~: Triggers an action on the parent Wing or system DBus.
+
+** Pinion (Data & Event Provider)
+- *Role*: Headless, persistent background worker responsible for monitoring system state, handling external daemons (e.g., MPRIS, notifications, network status), and pushing data to Feathers.
+- *Key Attributes*:
+  - ~name~: Pinion identifier.
+  - ~is_active~: Boolean tracking operational status.
+- *Common Methods*:
+  - ~start()~: Begins monitoring or event listening loop (called automatically on daemon startup).
+  - ~stop()~: Cleans up async loops or system connections.
+  - ~connect_signal(signal_name, callback)~: Allows Feathers or Wings to subscribe to data updates.
+
+

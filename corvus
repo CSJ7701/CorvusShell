@@ -10,14 +10,10 @@ from core.app import run_panel
 def cli():
     pass
 
-
 @cli.command()
 def list():
-
     registry = discover()
-
     for panel in registry.values():
-
         click.echo(
             f"{panel.name:15} {panel.description}"
         )
@@ -34,7 +30,7 @@ def run(panel):
             f"No panel named '{panel}'."
         )
 
-    run_panel(registry[panel].cls)
+    run_panel(registry[panel])
 
 
 @cli.command()
@@ -42,6 +38,11 @@ def run(panel):
 def info(panel):
 
     registry = discover()
+
+    if panel not in registry:
+        raise click.ClickException(
+            f"No panel named '{panel}'."
+        )
 
     p = registry[panel]
 
